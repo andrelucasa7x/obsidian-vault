@@ -1,0 +1,142 @@
+{
+  "collapse-filter": true,
+  "search": "",
+  "showTags": true,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {
+      "query": "path:Projetos",
+      "color": {
+        "a": 1,
+        "rgb": 16766720
+      }
+    },
+    {
+      "query": "path:SocialAgent",
+      "color": {
+        "a": 1,
+        "rgb": 16766720
+      }
+    },
+    {
+      "query": "path:NEO-HOLDING",
+      "color": {
+        "a": 1,
+        "rgb": 16766720
+      }
+    },
+    {
+      "query": "path:Tecnologias",
+      "color": {
+        "a": 1,
+        "rgb": 5614335
+      }
+    },
+    {
+      "query": "path:Conceitos",
+      "color": {
+        "a": 1,
+        "rgb": 5635925
+      }
+    },
+    {
+      "query": "path:Skills",
+      "color": {
+        "a": 1,
+        "rgb": 16727040
+      }
+    },
+    {
+      "query": "path:Marketing",
+      "color": {
+        "a": 1,
+        "rgb": 16737894
+      }
+    },
+    {
+      "query": "path:Livros",
+      "color": {
+        "a": 1,
+        "rgb": 10092543
+      }
+    },
+    {
+      "query": "path:Pessoas",
+      "color": {
+        "a": 1,
+        "rgb": 16777045
+      }
+    },
+    {
+      "query": "path:Daily",
+      "color": {
+        "a": 1,
+        "rgb": 8421504
+      }
+    },
+    {
+      "query": "path:Notas",
+      "color": {
+        "a": 1,
+        "rgb": 11184810
+      }
+    },
+    {
+      "query": "path:Workflows",
+      "color": {
+        "a": 1,
+        "rgb": 65535
+      }
+    },
+    {
+      "query": "path:Referências",
+      "color": {
+        "a": 1,
+        "rgb": 14524637
+      }
+    },
+    {
+      "query": "path:Ideias",
+      "color": {
+        "a": 1,
+        "rgb": 16761035
+      }
+    },
+    {
+      "query": "path:Prompts",
+      "color": {
+        "a": 1,
+        "rgb": 10145074
+      }
+    },
+    {
+      "query": "path:Briefings",
+      "color": {
+        "a": 1,
+        "rgb": 16750848
+      }
+    },
+    {
+      "query": "path:BetSignal",
+      "color": {
+        "a": 1,
+        "rgb": 3329330
+      }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": true,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1.2,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": true,
+  "centerStrength": 0.518713248970312,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 250,
+  "scale": 0.13168724279835337,
+  "close": true
+}

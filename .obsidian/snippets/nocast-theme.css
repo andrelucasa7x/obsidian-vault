@@ -1,0 +1,100 @@
+/* NOCAST ESTUDIOS - DNA Visual */
+/* Dark theme + Gold accent (#FFD700) */
+
+.theme-dark {
+  /* Background hierarchy */
+  --background-primary: #0a0a0f;
+  --background-primary-alt: #111118;
+  --background-secondary: #0e0e14;
+  --background-secondary-alt: #141420;
+  --background-modifier-border: #1a1a2e;
+  --background-modifier-form-field: #111118;
+  --background-modifier-hover: rgba(255, 215, 0, 0.05);
+  --background-modifier-active-hover: rgba(255, 215, 0, 0.08);
+
+  /* Gold accent */
+  --interactive-accent: #FFD700;
+  --interactive-accent-hover: #FFC400;
+  --text-accent: #FFD700;
+  --text-accent-hover: #FFC400;
+
+  /* Text */
+  --text-normal: #e0e0e0;
+  --text-muted: #888899;
+  --text-faint: #555566;
+
+  /* Links */
+  --link-color: #FFD700;
+  --link-color-hover: #FFC400;
+  --link-unresolved-color: #997a00;
+
+  /* Tags */
+  --tag-color: #FFD700;
+  --tag-background: rgba(255, 215, 0, 0.1);
+  --tag-color-hover: #FFC400;
+  --tag-background-hover: rgba(255, 215, 0, 0.15);
+
+  /* Headings */
+  --h1-color: #FFD700;
+  --h2-color: #e6c200;
+  --h3-color: #ccac00;
+  --h4-color: #b39700;
+  --h5-color: #998200;
+  --h6-color: #806c00;
+
+  /* Scrollbar */
+  --scrollbar-bg: transparent;
+  --scrollbar-thumb-bg: rgba(255, 215, 0, 0.15);
+  --scrollbar-active-thumb-bg: rgba(255, 215, 0, 0.3);
+
+  /* Graph */
+  --graph-line: rgba(255, 215, 0, 0.15);
+  --graph-node: #FFD700;
+  --graph-node-focused: #FFC400;
+  --graph-node-tag: #FFD700;
+  --graph-node-attachment: #555566;
+}
+
+/* Bold and italic */
+.theme-dark strong {
+  color: #FFD700;
+}
+
+/* Inline code */
+.theme-dark code {
+  color: #FFD700;
+  background: rgba(255, 215, 0, 0.08);
+  border-radius: 3px;
+}
+
+/* Blockquote gold left border */
+.theme-dark blockquote {
+  border-left: 3px solid #FFD700 !important;
+  background: rgba(255, 215, 0, 0.03);
+}
+
+/* Active file in sidebar */
+.theme-dark .nav-file-title.is-active {
+  background: rgba(255, 215, 0, 0.1);
+  color: #FFD700;
+}
+
+/* Checkbox done */
+.theme-dark input[type="checkbox"]:checked {
+  accent-color: #FFD700;
+}
+
+/* Selection */
+.theme-dark ::selection {
+  background: rgba(255, 215, 0, 0.2);
+}
+
+/* Dividers */
+.theme-dark hr {
+  border-color: rgba(255, 215, 0, 0.15);
+}
+
+/* Callout accent */
+.theme-dark .callout {
+  border-left-color: #FFD700;
+}

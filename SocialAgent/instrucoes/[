@@ -1,0 +1,956 @@
+# FERNANDO VAZ — ONBOARDER UNIVERSAL
+
+> Segundo .md da série. Pré-requisito: LIMPEZA-NOCAST-PRE-FERNANDO-VAZ.md
+> executado com V1-V7 ok (tag STABLE-PRE-FERNANDO-VAZ-2026-04-22).
+>
+> Cria o primeiro agente real do SocialAgent: Fernando Vaz.
+> Responsável por onboarding via WhatsApp, classificação de kit,
+> preenchimento de identidade e liberação progressiva do sistema.
+
+---
+
+<contexto>
+Estado atual após limpeza:
+- Tabela `kits` criada com registro `postador` (Nocast aponta pra ele)
+- Infra CoALA pronta mas subutilizada (agent_conversations=0, agent_plans=0)
+- Infra WhatsApp existente: whatsapp-webhook v6 (5 handlers), whatsapp_sessions, whatsapp_conversations
+- LLM stack definido: Gemini 2.5 Flash primary, DeepSeek fallback
+- design_knowledge tem 6406 entries com embedding (pgvector) — RAG visual pronto
+
+Problema que Fernando Vaz resolve:
+Hoje um tenant entra no sistema e cai direto no pipeline genérico. Não tem onboarding real. Não tem classificação de vertical. Não tem conversa. Tudo que é customizado foi digitado na mão pro Nocast. Isso não escala.
+
+Fernando Vaz é o agente que:
+1. Inicia contato com novo tenant via WhatsApp
+2. Classifica em qual kit o tenant se encaixa (postador, agencia, vendedor, influencer)
+3. Conduz conversa estruturada em 5 steps pra preencher brand_identity
+4. Invoca Human-as-Tool via agent_plans quando precisa de ação externa (Manus, Meta Business, logo, etc)
+5. Escreve em todas as memórias CoALA pra alimentar camada zero global
+6. Libera sistema progressivamente conforme onboarding_step avança
+
+Objetivo deste .md:
+Colocar Fernando Vaz no ar operacional. Primeiro tenant que vai passar por ele é um tenant de teste novo (não Nocast — Nocast já está no step 5).
+</contexto>
+
+<escopo>
+  <arquivos_permitidos>
+    Supabase SQL via MCP (apply_migration, execute_sql)
+    supabase/functions/fernando-vaz/index.ts (criar)
+    supabase/functions/fernando-vaz-start/index.ts (criar)
+    supabase/functions/whatsapp-webhook/index.ts (patch para v7)
+    supabase/functions/_shared/fernando-vaz/prompts.ts (criar)
+    supabase/functions/_shared/fernando-vaz/kits-catalog.ts (criar)
+    supabase/functions/_shared/fernando-vaz/types.ts (criar)
+  </arquivos_permitidos>
+  <arquivos_proibidos>
+    supabase/functions/generate-content/** (pipeline STABLE)
+    supabase/functions/render-card/** (pipeline STABLE)
+    supabase/functions/publish-post/** (pipeline STABLE)
+    supabase/functions/copiloto-*/** (operacional)
+    supabase/functions/news-curator/** (operacional)
+    supabase/functions/quality-check/** (ML operacional)
+    supabase/functions/auto-improve-loop/** (pipeline STABLE)
+    Frontend Next.js (pages/**, app/**, components/**) — sidebar progressiva vai em .md separado
+    Tabelas: posts, content_suggestions, schedules, templates, brand_identity do Nocast
+    Qualquer edge function não listada em arquivos_permitidos
+  </arquivos_proibidos>
+</escopo>
+
+<tarefa>
+
+# PASSO 0 — BACKUPS OBRIGATÓRIOS
+
+```sql
+CREATE TABLE IF NOT EXISTS _backup_kits_20260422_v2 AS SELECT * FROM kits;
+CREATE TABLE IF NOT EXISTS _backup_department_agents_20260422_v2 AS SELECT * FROM department_agents;
+```
+
+Verificar ambos > 0 antes de seguir.
+
+---
+
+# PASSO 1 — EVOLUIR TABELA `kits`
+
+Adicionar colunas que faltam pra descrever ritmo e formato por vertical.
+
+```sql
+ALTER TABLE kits
+  ADD COLUMN IF NOT EXISTS publishing_mode     TEXT DEFAULT 'reactive',  -- reactive | scheduled | hybrid
+  ADD COLUMN IF NOT EXISTS requires_calendar   BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS volume_per_week     TEXT,
+  ADD COLUMN IF NOT EXISTS editorial_structures JSONB DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS content_sources     JSONB DEFAULT '[]'::jsonb;
+```
+
+**Importante:** editorial_structures substitui conceitualmente template_slugs (que vira legado). Template concreto é SEMPRE por tenant, não por kit. Kit só define as ESTRUTURAS que o tenant pode instanciar. A coluna template_slugs não é removida pra não quebrar nada, mas deixa de ser a fonte de verdade.
+
+## 1.1 Atualizar kit postador com as novas colunas
+
+```sql
+UPDATE kits
+SET 
+  publishing_mode = 'reactive',
+  requires_calendar = false,
+  volume_per_week = 'unlimited',
+  editorial_structures = '[
+    {"slug":"card_noticia_hero","name":"Card notícia hero","purpose":"matéria principal","aspect":"1:1"},
+    {"slug":"card_noticia_split","name":"Card notícia split","purpose":"matéria secundária","aspect":"1:1"},
+    {"slug":"card_noticia_cinema","name":"Card notícia cinema","purpose":"matéria visual","aspect":"1:1"},
+    {"slug":"card_breaking","name":"Card breaking","purpose":"urgência","aspect":"1:1"},
+    {"slug":"card_tipografico","name":"Card tipográfico","purpose":"citação forte","aspect":"1:1"},
+    {"slug":"card_frame","name":"Card com moldura","purpose":"foco em headline","aspect":"1:1"},
+    {"slug":"card_minimal","name":"Card minimalista","purpose":"editorial limpo","aspect":"1:1"},
+    {"slug":"card_glass","name":"Card glassmorphism","purpose":"estético","aspect":"1:1"},
+    {"slug":"card_tech_metrics","name":"Card tech com métricas","purpose":"dados/números","aspect":"1:1"},
+    {"slug":"card_tech_launch","name":"Card tech launch","purpose":"lançamento/produto","aspect":"1:1"},
+    {"slug":"carrossel_editorial","name":"Carrossel editorial","purpose":"aprofundamento","aspect":"1:1","slides":"4-7"}
+  ]'::jsonb,
+  content_sources = '["rss_feeds","diario_oficial","portal_proprio"]'::jsonb
+WHERE slug = 'postador';
+```
+
+## 1.2 Inserir kit `agencia`
+
+```sql
+INSERT INTO kits (slug, name, description, required_fields, pipeline, active_agents, default_channels, template_slugs, publishing_mode, requires_calendar, volume_per_week, editorial_structures, content_sources)
+VALUES (
+  'agencia',
+  'Agência',
+  'Tenant que vende serviço/produto via conteúdo. Publicação planejada com calendário editorial.',
+  '["niche","brand_name","brand_tone","brand_differencial","color_primary","color_accent","font_headline","logo_url","instagram_account_id","content_themes","target_audience"]'::jsonb,
+  '["calendar-planner","content-generator","render-card","quality-check","scheduler","publish-post","collect-metrics"]'::jsonb,
+  '["cmo-architect","storyteller","headline-generator","designer-agent","publisher","brand-guard"]'::jsonb,
+  '["instagram","facebook","whatsapp","linkedin"]'::jsonb,
+  '[]'::jsonb,
+  'scheduled',
+  true,
+  '3-5',
+  '[
+    {"slug":"post_manifesto","name":"Post manifesto","purpose":"afirmação de posicionamento","aspect":"1:1"},
+    {"slug":"post_insight","name":"Post insight","purpose":"reflexão ou dado","aspect":"1:1"},
+    {"slug":"post_stat","name":"Post estatística","purpose":"número que impacta","aspect":"1:1"},
+    {"slug":"post_mock","name":"Post mockup","purpose":"produto em uso","aspect":"1:1"},
+    {"slug":"post_bastidor","name":"Post bastidor","purpose":"processo interno","aspect":"1:1"},
+    {"slug":"carrossel_caso","name":"Carrossel de caso","purpose":"case de cliente","aspect":"1:1","slides":"6"},
+    {"slug":"carrossel_diagnostico","name":"Carrossel diagnóstico","purpose":"análise de dor","aspect":"1:1","slides":"5-6"}
+  ]'::jsonb,
+  '["banco_temas","casos_reais","insights_internos","pauta_cliente"]'::jsonb
+)
+ON CONFLICT (slug) DO UPDATE SET
+  publishing_mode = EXCLUDED.publishing_mode,
+  requires_calendar = EXCLUDED.requires_calendar,
+  volume_per_week = EXCLUDED.volume_per_week,
+  editorial_structures = EXCLUDED.editorial_structures,
+  content_sources = EXCLUDED.content_sources,
+  active_agents = EXCLUDED.active_agents,
+  default_channels = EXCLUDED.default_channels,
+  required_fields = EXCLUDED.required_fields,
+  pipeline = EXCLUDED.pipeline,
+  description = EXCLUDED.description;
+```
+
+---
+
+# PASSO 2 — REGISTRAR FERNANDO VAZ EM `department_agents`
+
+```sql
+INSERT INTO department_agents (slug, name, role, tier, persona, capabilities, status, config)
+VALUES (
+  'fernando-vaz',
+  'Fernando Vaz',
+  'Onboarder universal — classifica kit, conduz conversa, preenche identidade',
+  'specialist',
+  'Copywriter direct response brasileiro. Halbert + Campbell + Aaker com sotaque BR. Copy que vende, oferta que fecha, manifesto que gruda. Tom direto, sem preâmbulo, sem jargão. Conduz conversa como amigo que entende de marketing.',
+  ARRAY['tenant_onboarding','kit_classification','brand_identity_collection','persuasive_copy','offer_crafting','manifesto_writing','editorial_composition','human_as_tool_orchestration','progressive_unlock'],
+  'active',
+  jsonb_build_object(
+    'model_primary', 'gemini-2.5-flash',
+    'model_fallback', 'deepseek-chat',
+    'temperature', 0.7,
+    'max_turns_per_step', 6,
+    'session_ttl_hours', 72,
+    'language', 'pt-BR'
+  )
+)
+ON CONFLICT (slug) DO UPDATE SET
+  role = EXCLUDED.role,
+  persona = EXCLUDED.persona,
+  capabilities = EXCLUDED.capabilities,
+  config = EXCLUDED.config,
+  status = 'active';
+```
+
+---
+
+# PASSO 3 — CRIAR ARQUIVOS COMPARTILHADOS
+
+## 3.1 `supabase/functions/_shared/fernando-vaz/types.ts`
+
+```typescript
+export type OnboardingStep = 0 | 1 | 2 | 3 | 4 | 5;
+
+export interface FernandoVazRequest {
+  tenant_id: string;
+  phone: string;
+  message: string;
+  session_id?: string;
+}
+
+export interface FernandoVazResponse {
+  reply: string;
+  step_advanced: boolean;
+  new_step?: OnboardingStep;
+  kit_classified?: string;
+  plan_invoked?: string;
+  session_id: string;
+}
+
+export interface WorkingState {
+  current_step: OnboardingStep;
+  kit_slug?: string;
+  collected_fields: Record<string, any>;
+  pending_plan?: string;
+  last_question?: string;
+  retry_count: number;
+}
+
+export interface KitDefinition {
+  slug: string;
+  name: string;
+  required_fields: string[];
+  editorial_structures: Array<{ slug: string; name: string; purpose: string }>;
+  active_agents: string[];
+  publishing_mode: 'reactive' | 'scheduled' | 'hybrid';
+}
+```
+
+## 3.2 `supabase/functions/_shared/fernando-vaz/kits-catalog.ts`
+
+```typescript
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+export async function loadKits(supabase: ReturnType<typeof createClient>) {
+  const { data, error } = await supabase
+    .from('kits')
+    .select('slug,name,description,required_fields,editorial_structures,active_agents,publishing_mode,requires_calendar,volume_per_week,default_channels')
+    .eq('status', 'active');
+  if (error) throw error;
+  return data;
+}
+
+export function formatKitsForLLM(kits: any[]): string {
+  return kits.map(k => `
+KIT "${k.slug}" — ${k.name}
+Descrição: ${k.description}
+Modo de publicação: ${k.publishing_mode}${k.requires_calendar ? ' (requer calendário)' : ''}
+Volume: ${k.volume_per_week || 'não definido'}
+Canais padrão: ${(k.default_channels || []).join(', ')}
+Formatos editoriais: ${(k.editorial_structures || []).map((e: any) => e.name).join(', ')}
+Campos obrigatórios: ${(k.required_fields || []).join(', ')}
+`).join('\n---\n');
+}
+```
+
+## 3.3 `supabase/functions/_shared/fernando-vaz/prompts.ts`
+
+```typescript
+export const FERNANDO_VAZ_SYSTEM = `Você é Fernando Vaz.
+
+IDENTIDADE:
+Copywriter brasileiro direct response. Halbert + Campbell + Aaker com sotaque BR. Já vendeu milhões em Meta Ads. Entende de copy, de marca, de mercado digital brasileiro. Tom direto. Zero jargão. Zero motivação vazia.
+
+SEU TRABALHO AQUI:
+Conduzir o onboarding de um novo tenant do SocialAgent via WhatsApp. Classificar em qual kit ele se encaixa, descobrir identidade visual e editorial, preparar o terreno pra IA trabalhar 24/7 por ele.
+
+COMO VOCÊ FALA:
+- PT-BR natural, Parnamirim/RN
+- Frases curtas. Uma ideia por vez.
+- Nunca "tudo bem?", "vamos juntos", "legal!", "adorei!"
+- Chama a pessoa pelo nome quando souber
+- Se não souber algo, pergunta direto
+- Quando cliente fugir do assunto, traz de volta com firmeza educada
+- Usa exemplos concretos, nunca abstração
+
+O QUE VOCÊ SABE:
+- Os kits disponíveis (injetados abaixo)
+- O estado atual do onboarding desse tenant (injetado abaixo)
+- O que já foi coletado (injetado abaixo)
+
+O QUE VOCÊ PODE FAZER:
+1. Fazer a próxima pergunta pra avançar o step atual
+2. Classificar o cliente em um kit (quando tiver evidência clara)
+3. Invocar HUMAN_AS_TOOL quando precisar que o cliente faça algo externo (ex: gerar logo no Manus, criar System User no Meta, mandar foto)
+4. Marcar um step como concluído quando todos os dados daquele step estiverem preenchidos
+5. Responder perguntas do cliente sobre o sistema, de forma curta
+
+OS 5 STEPS DE ONBOARDING:
+- Step 1: Identidade conceitual (niche, tone, differencial, target_audience)
+- Step 2: Identidade visual (color_primary, color_accent, font_headline, logo_url)
+- Step 3: Canais conectados (pelo menos IG + 1 outro)
+- Step 4: Primeiro card genesis aprovado pelo cliente
+- Step 5: Onboarding completo, dashboard 100% liberado
+
+REGRAS DURAS:
+- NUNCA pula step sem ter os campos obrigatórios daquele step preenchidos
+- NUNCA inventa informação sobre o tenant — se não sabe, pergunta
+- NUNCA promete funcionalidade que não está na doutrina
+- NUNCA aceita respostas evasivas em step 1 (identidade conceitual é lei)
+- SEMPRE responde em JSON estruturado conforme schema
+
+SAÍDA OBRIGATÓRIA (JSON):
+{
+  "reply": "texto da mensagem a enviar no WhatsApp (sem markdown, sem emoji excessivo)",
+  "action": "ask_question" | "classify_kit" | "invoke_human_tool" | "advance_step" | "completed",
+  "updates": {
+    "brand_identity": { /* campos a atualizar em brand_identity */ },
+    "tenants": { /* campos a atualizar em tenants */ },
+    "working_state": { /* atualização do working_memory */ }
+  },
+  "kit_slug": "postador|agencia|..." (só se action=classify_kit),
+  "plan": { "name": "...", "description": "...", "goals": [...] } (só se action=invoke_human_tool),
+  "new_step": 1 | 2 | 3 | 4 | 5 (só se action=advance_step),
+  "reasoning_log": "breve raciocínio pro log (não vai pro cliente)"
+}`;
+
+export function buildUserPrompt(params: {
+  kits_catalog: string;
+  working_state: any;
+  brand_identity_current: any;
+  tenant_current: any;
+  conversation_history: Array<{ direction: string; message: string }>;
+  incoming_message: string;
+}): string {
+  return `KITS DISPONÍVEIS:
+${params.kits_catalog}
+
+ESTADO ATUAL DO TENANT:
+${JSON.stringify(params.tenant_current, null, 2)}
+
+BRAND IDENTITY ATUAL:
+${JSON.stringify(params.brand_identity_current, null, 2)}
+
+WORKING STATE DA SESSÃO:
+${JSON.stringify(params.working_state, null, 2)}
+
+HISTÓRICO DA CONVERSA (últimas 10 mensagens):
+${params.conversation_history.slice(-10).map(m => `${m.direction === 'in' ? 'CLIENTE' : 'VOCÊ'}: ${m.message}`).join('\n')}
+
+MENSAGEM ATUAL DO CLIENTE:
+${params.incoming_message}
+
+Responda em JSON estruturado conforme o schema da system.`;
+}
+```
+
+---
+
+# PASSO 4 — CRIAR EDGE FUNCTION `fernando-vaz/index.ts`
+
+Esta é a function principal. Recebe mensagem, raciocina, escreve memórias, devolve resposta.
+
+```typescript
+// supabase/functions/fernando-vaz/index.ts
+import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
+import { createClient } from 'npm:@supabase/supabase-js@2';
+import { loadKits, formatKitsForLLM } from '../_shared/fernando-vaz/kits-catalog.ts';
+import { FERNANDO_VAZ_SYSTEM, buildUserPrompt } from '../_shared/fernando-vaz/prompts.ts';
+import type { FernandoVazRequest, WorkingState } from '../_shared/fernando-vaz/types.ts';
+
+const AGENT_NAME = 'fernando-vaz';
+const AGENT_SECRET = Deno.env.get('AGENT_SECRET') || 'socialagent2026';
+
+serve(async (req) => {
+  if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+
+  // Auth
+  const secret = req.headers.get('x-agent-secret');
+  if (secret !== AGENT_SECRET) return new Response('Unauthorized', { status: 401 });
+
+  const body: FernandoVazRequest = await req.json();
+  const { tenant_id, phone, message } = body;
+
+  if (!tenant_id || !phone || !message) {
+    return new Response(JSON.stringify({ error: 'missing required fields' }), { status: 400 });
+  }
+
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  );
+
+  try {
+    // 1. Obter ou criar session
+    const session_id = body.session_id || await getOrCreateSession(supabase, tenant_id, phone);
+
+    // 2. Gravar mensagem do cliente
+    await supabase.from('agent_conversations').insert({
+      tenant_id, agent_name: AGENT_NAME, direction: 'in', message,
+      context: { session_id, phone }
+    });
+    await supabase.from('whatsapp_conversations').insert({
+      tenant_id, phone, direction: 'in', message,
+      context_type: 'fernando_vaz', context_id: session_id
+    });
+
+    // 3. Carregar working state
+    const working_state = await loadWorkingState(supabase, tenant_id, session_id);
+
+    // 4. Carregar contexto
+    const kits = await loadKits(supabase);
+    const { data: tenant } = await supabase.from('tenants').select('*').eq('id', tenant_id).single();
+    const { data: brand } = await supabase.from('brand_identity').select('*').eq('tenant_id', tenant_id).maybeSingle();
+    const { data: history } = await supabase.from('agent_conversations')
+      .select('direction,message')
+      .eq('tenant_id', tenant_id)
+      .eq('agent_name', AGENT_NAME)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    // 5. Montar prompt
+    const user_prompt = buildUserPrompt({
+      kits_catalog: formatKitsForLLM(kits),
+      working_state,
+      brand_identity_current: brand || {},
+      tenant_current: tenant,
+      conversation_history: (history || []).reverse(),
+      incoming_message: message
+    });
+
+    // 6. Chamar LLM
+    const llm_response = await callLLM(FERNANDO_VAZ_SYSTEM, user_prompt);
+
+    // 7. Aplicar atualizações
+    if (llm_response.updates?.brand_identity) {
+      await supabase.from('brand_identity')
+        .update(llm_response.updates.brand_identity)
+        .eq('tenant_id', tenant_id);
+    }
+    if (llm_response.updates?.tenants) {
+      await supabase.from('tenants')
+        .update(llm_response.updates.tenants)
+        .eq('id', tenant_id);
+    }
+
+    // 8. Tratar ação específica
+    let step_advanced = false;
+    let new_step: number | undefined;
+
+    if (llm_response.action === 'classify_kit' && llm_response.kit_slug) {
+      await supabase.from('tenants').update({ kit_slug: llm_response.kit_slug }).eq('id', tenant_id);
+      await recordEpisodic(supabase, tenant_id, 'kit_classified', 
+        `Tenant classificado como kit '${llm_response.kit_slug}'`, 0.9);
+    }
+
+    if (llm_response.action === 'invoke_human_tool' && llm_response.plan) {
+      const { data: plan } = await supabase.from('agent_plans').insert({
+        tenant_id,
+        plan_name: llm_response.plan.name,
+        description: llm_response.plan.description,
+        created_by: AGENT_NAME,
+        status: 'waiting_human',
+        goals: llm_response.plan.goals || [],
+        constraints: llm_response.plan.constraints || []
+      }).select().single();
+      if (plan) {
+        working_state.pending_plan = plan.id;
+      }
+    }
+
+    if (llm_response.action === 'advance_step' && typeof llm_response.new_step === 'number') {
+      await supabase.from('brand_identity')
+        .update({ onboarding_step: llm_response.new_step })
+        .eq('tenant_id', tenant_id);
+      step_advanced = true;
+      new_step = llm_response.new_step;
+      await recordEpisodic(supabase, tenant_id, 'step_advanced',
+        `Avançou pro step ${llm_response.new_step}`, 0.8);
+    }
+
+    if (llm_response.action === 'completed') {
+      await supabase.from('brand_identity')
+        .update({ onboarding_step: 5 })
+        .eq('tenant_id', tenant_id);
+      await supabase.from('tenants')
+        .update({ onboarding_completed: true })
+        .eq('id', tenant_id);
+      await recordEpisodic(supabase, tenant_id, 'onboarding_completed',
+        'Onboarding concluído', 1.0);
+    }
+
+    // 9. Atualizar working state
+    const new_working = {
+      ...working_state,
+      ...(llm_response.updates?.working_state || {}),
+      last_question: llm_response.reply
+    };
+    await supabase.from('agent_working_memory').upsert({
+      tenant_id,
+      agent_name: AGENT_NAME,
+      session_id,
+      key: 'state',
+      value: new_working,
+      expires_at: new Date(Date.now() + 72 * 3600 * 1000).toISOString()
+    }, { onConflict: 'tenant_id,agent_name,session_id,key' });
+
+    // 10. Gravar resposta do agent
+    await supabase.from('agent_conversations').insert({
+      tenant_id, agent_name: AGENT_NAME, direction: 'out', message: llm_response.reply,
+      context: { session_id, action: llm_response.action, reasoning: llm_response.reasoning_log }
+    });
+    await supabase.from('whatsapp_conversations').insert({
+      tenant_id, phone, direction: 'out', message: llm_response.reply,
+      context_type: 'fernando_vaz', context_id: session_id
+    });
+
+    // 11. Log
+    await supabase.from('agent_logs').insert({
+      tenant_id,
+      agent_name: AGENT_NAME,
+      action: llm_response.action,
+      status: 'success',
+      input: { message, session_id },
+      output: { reply: llm_response.reply, action: llm_response.action }
+    });
+
+    return new Response(JSON.stringify({
+      reply: llm_response.reply,
+      step_advanced, new_step,
+      kit_classified: llm_response.kit_slug,
+      plan_invoked: llm_response.plan?.name,
+      session_id
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (err) {
+    console.error('fernando-vaz error', err);
+    await supabase.from('agent_logs').insert({
+      tenant_id, agent_name: AGENT_NAME, action: 'error', status: 'error',
+      input: body, output: { error: String(err) }
+    });
+    return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+  }
+});
+
+// --- helpers ---
+
+async function getOrCreateSession(supabase: any, tenant_id: string, phone: string): Promise<string> {
+  const { data: existing } = await supabase
+    .from('whatsapp_sessions')
+    .select('id')
+    .eq('tenant_id', tenant_id)
+    .eq('context_type', 'fernando_vaz')
+    .eq('status', 'active')
+    .gt('expires_at', new Date().toISOString())
+    .maybeSingle();
+  if (existing) return existing.id;
+
+  const { data: created } = await supabase.from('whatsapp_sessions').insert({
+    tenant_id,
+    context_type: 'fernando_vaz',
+    status: 'active',
+    expires_at: new Date(Date.now() + 72 * 3600 * 1000).toISOString()
+  }).select('id').single();
+  return created.id;
+}
+
+async function loadWorkingState(supabase: any, tenant_id: string, session_id: string): Promise<WorkingState> {
+  const { data } = await supabase.from('agent_working_memory')
+    .select('value')
+    .eq('tenant_id', tenant_id)
+    .eq('agent_name', AGENT_NAME)
+    .eq('session_id', session_id)
+    .eq('key', 'state')
+    .maybeSingle();
+  if (data?.value) return data.value;
+  return {
+    current_step: 0,
+    collected_fields: {},
+    retry_count: 0
+  };
+}
+
+async function recordEpisodic(supabase: any, tenant_id: string, event_type: string, description: string, importance: number) {
+  await supabase.from('agent_episodic_memory').insert({
+    tenant_id,
+    agent_name: AGENT_NAME,
+    event_type,
+    event_description: description,
+    importance_score: importance,
+    context: {}
+  });
+}
+
+async function callLLM(system: string, user: string): Promise<any> {
+  const gemini_key = Deno.env.get('GEMINI_API_KEY');
+  const deepseek_key = Deno.env.get('DEEPSEEK_API_KEY');
+
+  // Try Gemini first
+  if (gemini_key) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ role: 'user', parts: [{ text: user }] }],
+            generationConfig: {
+              temperature: 0.7,
+              responseMimeType: 'application/json'
+            }
+          })
+        }
+      );
+      if (!res.ok) throw new Error(`Gemini ${res.status}`);
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('Gemini empty response');
+      return JSON.parse(text);
+    } catch (e) {
+      console.warn('Gemini failed, falling to DeepSeek', e);
+    }
+  }
+
+  // Fallback DeepSeek
+  if (deepseek_key) {
+    const res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${deepseek_key}`
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user }
+        ],
+        temperature: 0.7,
+        response_format: { type: 'json_object' }
+      })
+    });
+    if (!res.ok) throw new Error(`DeepSeek ${res.status}`);
+    const data = await res.json();
+    return JSON.parse(data.choices[0].message.content);
+  }
+
+  throw new Error('no LLM available');
+}
+```
+
+---
+
+# PASSO 5 — CRIAR EDGE FUNCTION `fernando-vaz-start/index.ts`
+
+Function auxiliar pra iniciar onboarding (chamada quando um novo tenant é criado ou manualmente pra teste).
+
+```typescript
+// supabase/functions/fernando-vaz-start/index.ts
+import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+const AGENT_SECRET = Deno.env.get('AGENT_SECRET') || 'socialagent2026';
+
+serve(async (req) => {
+  if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  const secret = req.headers.get('x-agent-secret');
+  if (secret !== AGENT_SECRET) return new Response('Unauthorized', { status: 401 });
+
+  const { tenant_id, phone } = await req.json();
+  if (!tenant_id || !phone) {
+    return new Response(JSON.stringify({ error: 'missing tenant_id or phone' }), { status: 400 });
+  }
+
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  );
+
+  // Criar session
+  const { data: session } = await supabase.from('whatsapp_sessions').insert({
+    tenant_id,
+    context_type: 'fernando_vaz',
+    status: 'active',
+    expires_at: new Date(Date.now() + 72 * 3600 * 1000).toISOString()
+  }).select('id').single();
+
+  const greeting = `Eai. Sou o Fernando. Vou te ajudar a configurar seu sistema aqui pelo zap. Nada de formulário chato.
+
+Pra começar, me conta em uma frase: o que você faz e quem é seu cliente?`;
+
+  // Enviar via Evolution API
+  const evolution_url = Deno.env.get('EVOLUTION_API_URL');
+  const evolution_key = Deno.env.get('EVOLUTION_API_KEY');
+  const evolution_instance = Deno.env.get('EVOLUTION_INSTANCE');
+
+  if (evolution_url && evolution_key && evolution_instance) {
+    await fetch(`${evolution_url}/message/sendText/${evolution_instance}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': evolution_key
+      },
+      body: JSON.stringify({
+        number: phone,
+        text: greeting
+      })
+    });
+  }
+
+  // Registrar no histórico
+  await supabase.from('agent_conversations').insert({
+    tenant_id, agent_name: 'fernando-vaz', direction: 'out', message: greeting,
+    context: { session_id: session.id, phone, bootstrap: true }
+  });
+  await supabase.from('whatsapp_conversations').insert({
+    tenant_id, phone, direction: 'out', message: greeting,
+    context_type: 'fernando_vaz', context_id: session.id
+  });
+  await supabase.from('agent_working_memory').insert({
+    tenant_id, agent_name: 'fernando-vaz', session_id: session.id, key: 'state',
+    value: { current_step: 0, collected_fields: {}, retry_count: 0 },
+    expires_at: new Date(Date.now() + 72 * 3600 * 1000).toISOString()
+  });
+
+  return new Response(JSON.stringify({ session_id: session.id, greeting }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+});
+```
+
+---
+
+# PASSO 6 — PATCH WHATSAPP-WEBHOOK v6 → v7
+
+1. Ler o arquivo atual `supabase/functions/whatsapp-webhook/index.ts`
+2. Localizar o bloco onde os 5 handlers existentes são avaliados (ordem atual: Claudionor editorial, foto DOM, quote reply, broadcast confirm, aprovação carrossel)
+3. Adicionar handler 6 ANTES do fallback/default, seguindo exatamente o padrão dos outros handlers
+4. Incrementar versão pra v7 no comentário do topo do arquivo
+
+## Handler 6 (adicionar)
+
+```typescript
+// Handler 6 — Fernando Vaz (onboarding)
+// Roteia mensagens de sessions ativas do tipo 'fernando_vaz' pro agent
+{
+  const { data: active_session } = await supabase
+    .from('whatsapp_sessions')
+    .select('id,tenant_id')
+    .eq('context_type', 'fernando_vaz')
+    .eq('status', 'active')
+    .gt('expires_at', new Date().toISOString())
+    .filter('tenant_id', 'in', `(select id from tenants where whatsapp_number = '${phone}' or id = (select tenant_id from social_channels where channel_id = '${phone}' limit 1))`)
+    .maybeSingle();
+
+  if (active_session) {
+    const fv_res = await fetch(`${SUPABASE_URL}/functions/v1/fernando-vaz`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-agent-secret': AGENT_SECRET
+      },
+      body: JSON.stringify({
+        tenant_id: active_session.tenant_id,
+        phone,
+        message,
+        session_id: active_session.id
+      })
+    });
+    const fv_data = await fv_res.json();
+    
+    // Enviar resposta do Fernando Vaz via Evolution
+    await sendWhatsApp(phone, fv_data.reply);
+    return new Response(JSON.stringify({ handled_by: 'fernando-vaz-handler', ...fv_data }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+}
+```
+
+**Nota de implementação:** a função `sendWhatsApp` já existe no whatsapp-webhook atual — reutilizar. Se a forma de lookup do tenant por phone for diferente da usada acima (depende de como está implementado hoje), adaptar a query pra seguir o padrão dos handlers existentes.
+
+---
+
+# PASSO 7 — DEPLOY
+
+```bash
+# Deploy edge functions via Supabase CLI
+supabase functions deploy fernando-vaz --no-verify-jwt
+supabase functions deploy fernando-vaz-start --no-verify-jwt
+supabase functions deploy whatsapp-webhook --no-verify-jwt
+```
+
+Verificar secrets já configurados no projeto Supabase (NÃO criar novos, apenas confirmar existência):
+- `GEMINI_API_KEY`
+- `DEEPSEEK_API_KEY`
+- `EVOLUTION_API_URL`
+- `EVOLUTION_API_KEY`
+- `EVOLUTION_INSTANCE`
+- `AGENT_SECRET`
+
+Se algum faltar, reportar e parar. NÃO cadastrar secret novo sem aprovação do André.
+
+</tarefa>
+
+<nao_fazer>
+- NÃO alterar o pipeline principal (generate-content, render-card, publish-post, quality-check, auto-improve-loop, copiloto-*, news-curator)
+- NÃO mexer no tenant Nocast (de274ffb-abe0-41de-9f4e-7c9ac49a68a4) durante os testes — Nocast já está step=5. Teste Fernando Vaz com tenant NOVO.
+- NÃO alterar frontend Next.js (sidebar progressiva vai em .md separado)
+- NÃO criar secrets novos sem aprovação
+- NÃO deletar nenhum registro de nenhuma tabela
+- NÃO remover templates, posts, ou qualquer dado histórico
+- NÃO tocar em agent_memory (25k linhas), agent_logs (69k), design_knowledge (6.4k) — apenas INSERT
+- NÃO cadastrar senhas hardcoded no código das novas edge functions
+- NÃO incluir logs que imprimam tokens, keys, ou conteúdo sensível
+- NÃO rodar o Fernando Vaz automaticamente contra algum tenant real antes das verificações V1-V8 passarem
+</nao_fazer>
+
+<verificacao>
+
+```sql
+-- V1: Backups criados
+SELECT 
+  (SELECT COUNT(*) FROM _backup_kits_20260422_v2) as kits_bkp,
+  (SELECT COUNT(*) FROM _backup_department_agents_20260422_v2) as agents_bkp;
+-- Esperado: ambos > 0
+
+-- V2: Colunas novas em kits
+SELECT column_name FROM information_schema.columns
+WHERE table_name='kits' 
+  AND column_name IN ('publishing_mode','requires_calendar','volume_per_week','editorial_structures','content_sources')
+ORDER BY column_name;
+-- Esperado: 5 linhas exatas
+
+-- V3: Kits registrados com estrutura completa
+SELECT slug, publishing_mode, requires_calendar,
+       jsonb_array_length(editorial_structures) as structs,
+       jsonb_array_length(active_agents) as agents_count
+FROM kits ORDER BY slug;
+-- Esperado:
+--   agencia   | scheduled | true  | 7  | 6
+--   postador  | reactive  | false | 11 | 5
+
+-- V4: Fernando Vaz no catálogo
+SELECT slug, name, tier, status, 
+       config->>'model_primary' as llm,
+       array_length(capabilities, 1) as n_caps
+FROM department_agents WHERE slug='fernando-vaz';
+-- Esperado: fernando-vaz | Fernando Vaz | specialist | active | gemini-2.5-flash | 9
+
+-- V5: Edge functions deployadas (checar via HEAD/OPTIONS)
+-- Executar via curl na shell:
+--   curl -i -X OPTIONS https://erfeiyxfrutreckzpkeb.supabase.co/functions/v1/fernando-vaz
+--   curl -i -X OPTIONS https://erfeiyxfrutreckzpkeb.supabase.co/functions/v1/fernando-vaz-start
+-- Esperado: ambas retornam 200 ou 204 (CORS preflight)
+
+-- V6: Teste funcional com tenant de teste
+-- Criar tenant de teste:
+INSERT INTO tenants (name, slug, active, status, whatsapp_number)
+VALUES ('Teste Fernando Vaz', 'teste-fv-' || extract(epoch from now())::text, true, 'active', '5584999999999')
+RETURNING id;
+-- Guardar o id retornado como TEST_TENANT_ID
+
+INSERT INTO brand_identity (tenant_id, onboarding_step)
+VALUES ('<TEST_TENANT_ID>', 0);
+
+-- Invocar fernando-vaz-start:
+-- curl -X POST https://.../functions/v1/fernando-vaz-start \
+--   -H "x-agent-secret: socialagent2026" \
+--   -H "Content-Type: application/json" \
+--   -d '{"tenant_id":"<TEST_TENANT_ID>","phone":"5584999999999"}'
+-- Esperado: retorna {session_id, greeting}
+
+-- V7: Session criada e primeira mensagem gravada
+SELECT 
+  (SELECT COUNT(*) FROM whatsapp_sessions WHERE tenant_id='<TEST_TENANT_ID>' AND context_type='fernando_vaz') as sessions,
+  (SELECT COUNT(*) FROM agent_conversations WHERE tenant_id='<TEST_TENANT_ID>' AND agent_name='fernando-vaz') as convs,
+  (SELECT COUNT(*) FROM agent_working_memory WHERE tenant_id='<TEST_TENANT_ID>' AND agent_name='fernando-vaz') as wm;
+-- Esperado: sessions=1, convs=1, wm=1
+
+-- V8: Simular resposta do cliente e ver se fernando-vaz responde
+-- curl -X POST https://.../functions/v1/fernando-vaz \
+--   -H "x-agent-secret: socialagent2026" \
+--   -H "Content-Type: application/json" \
+--   -d '{"tenant_id":"<TEST_TENANT_ID>","phone":"5584999999999","message":"Sou agência de marketing em Natal, atendo restaurantes"}'
+-- Esperado: retorna {reply, session_id, ...}
+
+-- Confirmar que houve resposta gravada
+SELECT COUNT(*) FROM agent_conversations
+WHERE tenant_id='<TEST_TENANT_ID>' AND agent_name='fernando-vaz';
+-- Esperado: >= 3 (greeting + cliente + resposta agent)
+```
+
+Limpeza do tenant de teste após V8:
+```sql
+-- Guardar TEST_TENANT_ID usado
+DELETE FROM agent_working_memory WHERE tenant_id='<TEST_TENANT_ID>';
+DELETE FROM agent_conversations WHERE tenant_id='<TEST_TENANT_ID>';
+DELETE FROM whatsapp_conversations WHERE tenant_id='<TEST_TENANT_ID>';
+DELETE FROM whatsapp_sessions WHERE tenant_id='<TEST_TENANT_ID>';
+DELETE FROM agent_logs WHERE tenant_id='<TEST_TENANT_ID>';
+DELETE FROM agent_episodic_memory WHERE tenant_id='<TEST_TENANT_ID>';
+DELETE FROM brand_identity WHERE tenant_id='<TEST_TENANT_ID>';
+DELETE FROM tenants WHERE id='<TEST_TENANT_ID>';
+```
+
+</verificacao>
+
+<criterio_sucesso>
+- Todas V1-V8 passam
+- fernando-vaz e fernando-vaz-start deployadas e respondendo 200/204 em OPTIONS
+- whatsapp-webhook v7 deployado sem quebrar handlers 1-5 anteriores
+- Kit postador atualizado + kit agencia inserido
+- Nocast continua publicando normalmente nas próximas 2 horas após deploy
+- Tenant de teste consegue receber greeting + responder + receber resposta do agent
+- agent_conversations, agent_episodic_memory, agent_working_memory, agent_plans começam a ter linhas do Fernando Vaz
+</criterio_sucesso>
+
+<rollback>
+
+```bash
+# 1. Reverter edge functions via git
+git checkout main -- supabase/functions/whatsapp-webhook/index.ts
+supabase functions deploy whatsapp-webhook --no-verify-jwt
+
+# 2. Deletar funções novas
+supabase functions delete fernando-vaz
+supabase functions delete fernando-vaz-start
+
+# 3. Restaurar dados
+```
+
+```sql
+-- Reverter catálogo de agents
+DELETE FROM department_agents WHERE slug='fernando-vaz';
+INSERT INTO department_agents SELECT * FROM _backup_department_agents_20260422_v2
+  WHERE slug NOT IN (SELECT slug FROM department_agents);
+
+-- Reverter kits
+DELETE FROM kits WHERE slug IN ('agencia');
+DELETE FROM kits;
+INSERT INTO kits SELECT * FROM _backup_kits_20260422_v2;
+
+-- Dropar colunas novas (só se necessário forçar estado original)
+ALTER TABLE kits 
+  DROP COLUMN IF EXISTS publishing_mode,
+  DROP COLUMN IF EXISTS requires_calendar,
+  DROP COLUMN IF EXISTS volume_per_week,
+  DROP COLUMN IF EXISTS editorial_structures,
+  DROP COLUMN IF EXISTS content_sources;
+```
+
+</rollback>
+
+<apos_concluir>
+Próximos .md na fila:
+
+1. **FERNANDO-VAZ-SIDEBAR-PROGRESSIVA.md** (frontend): Next.js + middleware que lê `brand_identity.onboarding_step` e libera rotas/itens de sidebar conforme step (1=Brand visível, 2=+Templates, 3=+Canais, 4=+Dashboard preview, 5=tudo).
+
+2. **FERNANDO-VAZ-GENESIS-CARD.md**: step 4 do onboarding — após identidade coletada, gerar 1 card de exemplo e pedir aprovação. Requer ligar Fernando Vaz no generate-content + render-card.
+
+3. **TASTE-LEARNER-REPAIR.md**: taste-learner está em `error`. Sem ele, camada zero não aprende. Corrigir antes de ter múltiplos tenants rodando.
+
+4. **KIT-VENDEDOR.md** e **KIT-INFLUENCER.md**: expandir verticais conforme primeiros clientes reais entrarem.
+
+Depois de V8 passar, commitar tag git: `STABLE-FERNANDO-VAZ-ALIVE-2026-04-22`.
+</apos_concluir>

@@ -1,0 +1,219 @@
+{
+  "main": {
+    "id": "1485eb7fb24b78a4",
+    "type": "split",
+    "children": [
+      {
+        "id": "f4bbc0c0490be2e6",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "5dfe173d09148870",
+            "type": "leaf",
+            "state": {
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Visualização em gráfico"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "c2147fbf84c287f4",
+    "type": "split",
+    "children": [
+      {
+        "id": "d8040b91d5671320",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "85ff93858f5d0ef2",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Explorador de arquivos"
+            }
+          },
+          {
+            "id": "fb417281f62e476f",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Procurar"
+            }
+          },
+          {
+            "id": "86ba41582ff473dd",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Marcadores"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "825f90fe8aee35ac",
+    "type": "split",
+    "children": [
+      {
+        "id": "a36e8d5f57663793",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "d06e6aa27bfc554c",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Links inversos"
+            }
+          },
+          {
+            "id": "d5a5922ee0239591",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Links de saída"
+            }
+          },
+          {
+            "id": "bcb6ceb99eaa995d",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Etiquetas"
+            }
+          },
+          {
+            "id": "5c6cdc4093cd1dac",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "Todas as propriedades"
+            }
+          },
+          {
+            "id": "1ca06ecdbec8cef1",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Sumário"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "claude-code-mcp:Toggle Claude Terminal": false,
+      "switcher:Abrir a troca rápida": false,
+      "graph:Abrir visualização em gráfico": false,
+      "canvas:Criar novo canvas": false,
+      "daily-notes:Abrir a nota de hoje": false,
+      "templates:Inserir modelo": false,
+      "command-palette:Abrir paleta de comandos": false,
+      "bases:Criar nova base": false
+    }
+  },
+  "active": "5dfe173d09148870",
+  "lastOpenFiles": [
+    "Tecnologias/Puppeteer.md",
+    "Workflows/Feature-Development.md",
+    "SocialAgent/Estado-Atual.md",
+    "SocialAgent/Estado-Atual.md.tmp.140302.1774592746979",
+    "Projetos/SocialAgent.md",
+    "Tecnologias/TypeScript.md",
+    "SocialAgent/Master-Plan.md",
+    "SocialAgent/Master-Plan.md.tmp.4112618.1774330501200",
+    "Home.md",
+    "Responsive Design.md",
+    "Sem título",
+    "Workflows/WhatsApp-Automation.md",
+    "Workflows/Design-Pipeline.md",
+    "Workflows/Content-Generation-Pipeline.md",
+    "Workflows/TDD-Workflow.md",
+    "Workflows/Code-Review-Process.md",
+    "Workflows/Deploy-Pipeline.md",
+    "Pessoas/Yago-Martins.md",
+    "Pessoas/Zeno-Rocha.md",
+    "Pessoas/Eric-Evans.md",
+    "Pessoas/Kent-Beck.md",
+    "Pessoas/Martin-Fowler.md",
+    "Pessoas/Robert-C-Martin.md",
+    "Skills/Planning-Skills.md",
+    "Skills/AI-ML-Skills.md",
+    "Skills/Backend-Skills.md",
+    "Skills/Frontend-Skills.md",
+    "Skills/Database-Skills.md",
+    "Skills/DevOps-Skills.md",
+    "Tecnologias/TypeScript.md.tmp.4112618.1774322562304",
+    "Tecnologias/Next.js.md.tmp.4112618.1774322556345",
+    "Tecnologias/React.md.tmp.4112618.1774322550108",
+    "Workflows",
+    "Pessoas",
+    "Livros",
+    "Skills"
+  ]
+}
